@@ -1,0 +1,357 @@
+-- Create Database
+
+CREATE DATABASE Student_information_System;
+
+USE Student_information_System;
+
+-- Person table
+CREATE TABLE Person (
+    person_id INT PRIMARY KEY AUTO_INCREMENT,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_person_email CHECK (email LIKE '%@%.%')
+);
+
+-- Program table
+CREATE TABLE Program (
+    prog_id INT PRIMARY KEY AUTO_INCREMENT,
+    code VARCHAR(20) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    duration_years INT DEFAULT 4,
+    total_credits INT NOT NULL,
+    status ENUM('Active', 'Inactive') DEFAULT 'Active',
+    CONSTRAINT chk_program_credits CHECK (total_credits > 0)
+);
+
+-- Student table
+CREATE TABLE Student (
+    student_id INT PRIMARY KEY AUTO_INCREMENT,
+    person_id INT UNIQUE NOT NULL,
+    reg_no VARCHAR(20) UNIQUE NOT NULL,
+    program_id INT NOT NULL,
+    year_of_study INT DEFAULT 1,
+    enrollment_date DATE NOT NULL,
+    status ENUM('Active', 'Graduated', 'Withdrawn') DEFAULT 'Active',
+    FOREIGN KEY (person_id) REFERENCES Person(person_id) ON DELETE CASCADE,
+    FOREIGN KEY (program_id) REFERENCES Program(prog_id),
+    CONSTRAINT chk_student_year CHECK (year_of_study BETWEEN 1 AND 6)
+);
+
+-- Lecturer table
+CREATE TABLE Lecturer (
+    lecturer_id INT PRIMARY KEY AUTO_INCREMENT,
+    person_id INT UNIQUE NOT NULL,
+    dept VARCHAR(100) NOT NULL,
+    title VARCHAR(50),
+    hire_date DATE NOT NULL,
+    status ENUM('Active', 'Inactive') DEFAULT 'Active',
+    FOREIGN KEY (person_id) REFERENCES Person(person_id) ON DELETE CASCADE
+);
+
+-- Course table
+CREATE TABLE Course (
+    course_id INT PRIMARY KEY AUTO_INCREMENT,
+    code VARCHAR(20) UNIQUE NOT NULL,
+    title VARCHAR(100) NOT NULL,
+    credits INT NOT NULL,
+    description TEXT,
+    status ENUM('Active', 'Inactive') DEFAULT 'Active',
+    CONSTRAINT chk_course_credits CHECK (credits > 0)
+);
+
+-- CourseSection table
+CREATE TABLE CourseSection (
+    section_id INT PRIMARY KEY AUTO_INCREMENT,
+    course_id INT NOT NULL,
+    semester VARCHAR(20) NOT NULL,
+    year YEAR NOT NULL,
+    lecturer_id INT NOT NULL,
+    room VARCHAR(50),
+    capacity INT NOT NULL,
+    current_enrollment INT DEFAULT 0,
+    status ENUM('Open', 'Closed', 'Cancelled') DEFAULT 'Open',
+    FOREIGN KEY (course_id) REFERENCES Course(course_id),
+    FOREIGN KEY (lecturer_id) REFERENCES Lecturer(lecturer_id),
+    CONSTRAINT chk_section_capacity CHECK (capacity > 0),
+    CONSTRAINT chk_enrollment_limit CHECK (current_enrollment <= capacity AND current_enrollment >= 0),
+    UNIQUE KEY unique_section (course_id, semester, year, room)
+);
+
+-- Enrollment table
+CREATE TABLE Enrollment (
+    enrollment_id INT PRIMARY KEY AUTO_INCREMENT,
+    student_id INT NOT NULL,
+    section_id INT NOT NULL,
+    status ENUM('Enrolled', 'Dropped', 'Completed') DEFAULT 'Enrolled',
+    enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    final_grade DECIMAL(4,2),
+    FOREIGN KEY (student_id) REFERENCES Student(student_id),
+    FOREIGN KEY (section_id) REFERENCES CourseSection(section_id),
+    CONSTRAINT chk_final_grade CHECK (final_grade BETWEEN 0 AND 100 OR final_grade IS NULL),
+    UNIQUE KEY unique_enrollment (student_id, section_id)
+);
+
+-- Assessment table
+CREATE TABLE Assessment (
+    assessment_id INT PRIMARY KEY AUTO_INCREMENT,
+    section_id INT NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    weight DECIMAL(5,2) NOT NULL,
+    total_marks DECIMAL(6,2) NOT NULL DEFAULT 100,
+    assessment_type ENUM('Exam', 'Assignment', 'Quiz', 'Project', 'Participation') NOT NULL,
+    due_date DATETIME,
+    FOREIGN KEY (section_id) REFERENCES CourseSection(section_id),
+    CONSTRAINT chk_assessment_weight CHECK (weight BETWEEN 0 AND 100),
+    CONSTRAINT chk_assessment_marks CHECK (total_marks > 0)
+);
+
+-- Grade table
+CREATE TABLE Grade (
+    grade_id INT PRIMARY KEY AUTO_INCREMENT,
+    enrollment_id INT NOT NULL,
+    assessment_id INT NOT NULL,
+    score DECIMAL(6,2),
+    graded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    graded_by INT,
+    FOREIGN KEY (enrollment_id) REFERENCES Enrollment(enrollment_id),
+    FOREIGN KEY (assessment_id) REFERENCES Assessment(assessment_id),
+    FOREIGN KEY (graded_by) REFERENCES Lecturer(lecturer_id),
+    CONSTRAINT chk_grade_score CHECK (score >= 0),
+    UNIQUE KEY unique_grade (enrollment_id, assessment_id)
+);
+
+-- AuditLog table
+CREATE TABLE AuditLog (
+    audit_id INT PRIMARY KEY AUTO_INCREMENT,
+    performed_by INT NOT NULL,
+    action VARCHAR(50) NOT NULL,
+    object_type VARCHAR(50) NOT NULL,
+    object_id INT NOT NULL,
+    details JSON,
+    performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (performed_by) REFERENCES Person(person_id)
+);
+
+-- Create indexes for performance
+CREATE INDEX idx_student_person ON Student(person_id);
+CREATE INDEX idx_student_program ON Student(program_id);
+CREATE INDEX idx_lecturer_person ON Lecturer(person_id);
+CREATE INDEX idx_enrollment_student ON Enrollment(student_id);
+CREATE INDEX idx_enrollment_section ON Enrollment(section_id);
+CREATE INDEX idx_section_course ON CourseSection(course_id);
+CREATE INDEX idx_section_lecturer ON CourseSection(lecturer_id);
+CREATE INDEX idx_grade_enrollment ON Grade(enrollment_id);
+CREATE INDEX idx_grade_assessment ON Grade(assessment_id);
+CREATE INDEX idx_audit_performed_by ON AuditLog(performed_by);
+CREATE INDEX idx_audit_object ON AuditLog(object_type, object_id);
+
+-- Triggers for automatic business logic
+
+-- Trigger to update current enrollment count
+DELIMITER //
+
+CREATE TRIGGER after_enrollment_insert
+AFTER INSERT ON Enrollment
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'Enrolled' THEN
+        UPDATE CourseSection 
+        SET current_enrollment = current_enrollment + 1 
+        WHERE section_id = NEW.section_id;
+    END IF;
+    
+    -- Log the enrollment action
+    INSERT INTO AuditLog (performed_by, action, object_type, object_id, details)
+    VALUES (
+        (SELECT person_id FROM Student WHERE student_id = NEW.student_id),
+        'ENROLL',
+        'Enrollment',
+        NEW.enrollment_id,
+        JSON_OBJECT('section_id', NEW.section_id, 'status', NEW.status)
+    );
+END//
+
+CREATE TRIGGER after_enrollment_update
+AFTER UPDATE ON Enrollment
+FOR EACH ROW
+BEGIN
+    -- Update enrollment count based on status changes
+    IF OLD.status = 'Enrolled' AND NEW.status != 'Enrolled' THEN
+        UPDATE CourseSection 
+        SET current_enrollment = current_enrollment - 1 
+        WHERE section_id = NEW.section_id;
+    ELSEIF OLD.status != 'Enrolled' AND NEW.status = 'Enrolled' THEN
+        UPDATE CourseSection 
+        SET current_enrollment = current_enrollment + 1 
+        WHERE section_id = NEW.section_id;
+    END IF;
+    
+    -- Log the status change
+    IF OLD.status != NEW.status THEN
+        INSERT INTO AuditLog (performed_by, action, object_type, object_id, details)
+        VALUES (
+            (SELECT person_id FROM Student WHERE student_id = NEW.student_id),
+            'UPDATE_STATUS',
+            'Enrollment',
+            NEW.enrollment_id,
+            JSON_OBJECT('old_status', OLD.status, 'new_status', NEW.status, 'section_id', NEW.section_id)
+        );
+    END IF;
+END//
+
+-- Trigger for grade auditing
+CREATE TRIGGER after_grade_insert
+AFTER INSERT ON Grade
+FOR EACH ROW
+BEGIN
+    INSERT INTO AuditLog (performed_by, action, object_type, object_id, details)
+    VALUES (
+        NEW.graded_by,
+        'CREATE_GRADE',
+        'Grade',
+        NEW.grade_id,
+        JSON_OBJECT('enrollment_id', NEW.enrollment_id, 'assessment_id', NEW.assessment_id, 'score', NEW.score)
+    );
+END//
+
+CREATE TRIGGER after_grade_update
+AFTER UPDATE ON Grade
+FOR EACH ROW
+BEGIN
+    IF OLD.score != NEW.score THEN
+        INSERT INTO AuditLog (performed_by, action, object_type, object_id, details)
+        VALUES (
+            NEW.graded_by,
+            'UPDATE_GRADE',
+            'Grade',
+            NEW.grade_id,
+            JSON_OBJECT(
+                'enrollment_id', NEW.enrollment_id, 
+                'assessment_id', NEW.assessment_id, 
+                'old_score', OLD.score, 
+                'new_score', NEW.score
+            )
+        );
+    END IF;
+END//
+
+-- Trigger to prevent over-enrollment
+CREATE TRIGGER before_enrollment_insert
+BEFORE INSERT ON Enrollment
+FOR EACH ROW
+BEGIN
+    DECLARE current_count INT;
+    DECLARE max_capacity INT;
+    
+    SELECT current_enrollment, capacity INTO current_count, max_capacity
+    FROM CourseSection 
+    WHERE section_id = NEW.section_id;
+    
+    IF current_count >= max_capacity THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Course section has reached maximum capacity';
+    END IF;
+END//
+
+DELIMITER ;
+
+-- Insert sample data for testing
+INSERT INTO Person (first_name, last_name, email, phone) VALUES
+('John', 'Doe', 'john.doe@university.edu', '123-456-7890'),
+('Jane', 'Smith', 'jane.smith@university.edu', '123-456-7891'),
+('Mike', 'Johnson', 'mike.johnson@university.edu', '123-456-7892'),
+('Sarah', 'Wilson', 'sarah.wilson@university.edu', '123-456-7893');
+
+INSERT INTO Program (code, name, total_credits) VALUES
+('CS', 'Computer Science', 120),
+('BBA', 'Business Administration', 120);
+
+INSERT INTO Student (person_id, reg_no, program_id, year_of_study, enrollment_date) VALUES
+(1, 'S1001', 1, 2, '2023-09-01'),
+(4, 'S1002', 2, 1, '2024-09-01');
+
+INSERT INTO Lecturer (person_id, dept, title, hire_date) VALUES
+(2, 'Computer Science', 'Professor', '2015-08-01'),
+(3, 'Business', 'Associate Professor', '2018-01-15');
+
+INSERT INTO Course (code, title, credits) VALUES
+('CS101', 'Introduction to Programming', 3),
+('BBA201', 'Principles of Management', 3);
+
+INSERT INTO CourseSection (course_id, semester, year, lecturer_id, room, capacity) VALUES
+(1, 'Fall', 2024, 1, 'Room 101', 30),
+(2, 'Fall', 2024, 2, 'Room 202', 25);
+
+INSERT INTO Enrollment (student_id, section_id) VALUES
+(1, 1),
+(2, 2);
+
+INSERT INTO Assessment (section_id, name, weight, assessment_type, total_marks) VALUES
+(1, 'Midterm Exam', 30.00, 'Exam', 100),
+(1, 'Final Project', 40.00, 'Project', 100),
+(2, 'Case Study', 25.00, 'Assignment', 100);
+
+INSERT INTO Grade (enrollment_id, assessment_id, score, graded_by) VALUES
+(1, 1, 85.50, 1),
+(1, 2, 92.00, 1),
+(2, 3, 78.50, 2);
+
+-- Useful views for reporting
+CREATE VIEW StudentDetails AS
+SELECT 
+    s.student_id,
+    s.reg_no,
+    p.first_name,
+    p.last_name,
+    p.email,
+    p.phone,
+    pr.name as program_name,
+    s.year_of_study,
+    s.status as student_status
+FROM Student s
+JOIN Person p ON s.person_id = p.person_id
+JOIN Program pr ON s.program_id = pr.prog_id;
+
+CREATE VIEW EnrollmentDetails AS
+SELECT 
+    e.enrollment_id,
+    s.reg_no,
+    p.first_name,
+    p.last_name,
+    c.code as course_code,
+    c.title as course_title,
+    cs.semester,
+    cs.year,
+    cs.room,
+    e.status as enrollment_status,
+    e.final_grade
+FROM Enrollment e
+JOIN Student s ON e.student_id = s.student_id
+JOIN Person p ON s.person_id = p.person_id
+JOIN CourseSection cs ON e.section_id = cs.section_id
+JOIN Course c ON cs.course_id = c.course_id;
+
+CREATE VIEW GradeDetails AS
+SELECT 
+    g.grade_id,
+    s.reg_no,
+    p.first_name,
+    p.last_name,
+    c.code as course_code,
+    c.title as course_title,
+    a.name as assessment_name,
+    a.weight,
+    g.score,
+    CONCAT(lp.first_name, ' ', lp.last_name) as graded_by_name,
+    g.graded_at
+FROM Grade g
+JOIN Enrollment e ON g.enrollment_id = e.enrollment_id
+JOIN Student s ON e.student_id = s.student_id
+JOIN Person p ON s.person_id = p.person_id
+JOIN CourseSection cs ON e.section_id = cs.section_id
+JOIN Course c ON cs.course_id = c.course_id
+JOIN Assessment a ON g.assessment_id = a.assessment_id
+LEFT JOIN Lecturer l ON g.graded_by = l.lecturer_id
+LEFT JOIN Person lp ON l.person_id = lp.person_id;
