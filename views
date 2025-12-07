@@ -1,0 +1,34 @@
+CREATE VIEW StudentPortalView AS
+SELECT 
+    s.student_id,
+    s.reg_no,
+    p.first_name,
+    p.last_name,
+    p.email,
+    pr.name as program_name,
+    s.year_of_study,
+    s.enrollment_date,
+    s.status as student_status
+FROM Student s
+JOIN Person p ON s.person_id = p.person_id
+JOIN Program pr ON s.program_id = pr.prog_id;
+
+CREATE VIEW FinancialDashboard AS
+SELECT 
+    s.student_id,
+    s.reg_no,
+    p.first_name,S
+    p.last_name,
+    pr.name as program_name,
+    pay.payment_id,
+    pay.semester,
+    pay.academic_year,
+    pay.amount_required,
+    pay.amount_paid,
+    pay.payment_percentage,
+    pay.payment_status,
+    pay.due_date
+FROM Student s
+JOIN Person p ON s.person_id = p.person_id
+JOIN Program pr ON s.program_id = pr.prog_id
+JOIN Payment pay ON s.student_id = pay.student_id;
